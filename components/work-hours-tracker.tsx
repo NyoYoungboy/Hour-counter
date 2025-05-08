@@ -12,20 +12,26 @@ import { AlertCircle, Clock, MapPin, RotateCcw, History, Wifi, WifiOff, Download
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion"
 import { useToast } from "@/hooks/use-toast"
-import {
-  initDB,
-  type WorkEntry,
-  type PeriodSummary,
-  saveEntry,
-  getAllEntries,
-  deleteEntry,
-  savePeriodSummary,
-  getAllPeriodSummaries,
-  deletePeriodSummary,
-  saveLastResetTime,
-  getLastResetTime,
-  registerNetworkListeners,
-} from "@/lib/db"
+
+type WorkEntry = {
+  id?: string
+  date: Date
+  startTime: string
+  endTime: string
+  hoursWorked: number
+  location: string
+  kilometers: number
+  addedAt: string
+}
+
+type PeriodSummary = {
+  id: string
+  startDate: string
+  endDate: string
+  resetDate: string
+  totalHours: number
+  totalKilometers: number
+}
 
 export function WorkHoursTracker() {
   const [date, setDate] = useState<Date | undefined>(new Date())
@@ -43,61 +49,50 @@ export function WorkHoursTracker() {
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null)
   const { toast } = useToast()
 
-  // Initialize the database and load data
+  // Load data from localStorage on component mount
   useEffect(() => {
-    const initializeApp = async () => {
-      try {
-        // Initialize IndexedDB
-        await initDB()
-
-        // Load entries
-        const savedEntries = await getAllEntries()
-        if (savedEntries.length > 0) {
-          setEntries(savedEntries)
-        }
-
-        // Load period summaries
-        const savedPeriods = await getAllPeriodSummaries()
-        if (savedPeriods.length > 0) {
-          setPreviousPeriods(savedPeriods)
-        }
-
-        // Load last reset time
-        const savedLastResetTime = await getLastResetTime()
-        if (savedLastResetTime) {
-          setLastResetTime(savedLastResetTime)
-        }
-
-        // Register network listeners
-        registerNetworkListeners()
-
-        // Set initial online status
-        setIsOnline(navigator.onLine)
-
-        // Listen for online/offline events
-        window.addEventListener("online", () => {
-          setIsOnline(true)
-          toast({
-            title: "You're back online",
-            description: "Your data will now sync automatically",
-          })
-        })
-
-        window.addEventListener("offline", () => {
-          setIsOnline(false)
-          toast({
-            title: "You're offline",
-            description: "Don't worry, your data is saved locally",
-            variant: "destructive",
-          })
-        })
-      } catch (error) {
-        console.error("Error initializing app:", error)
-        setError("Failed to initialize the application. Please refresh the page.")
-      }
+    const savedEntries = localStorage.getItem("workEntries")
+    if (savedEntries) {
+      const parsedEntries = JSON.parse(savedEntries).map((entry: any) => ({
+        ...entry,
+        date: new Date(entry.date),
+        // Ensure all entries have an addedAt timestamp
+        addedAt: entry.addedAt || new Date().toISOString(),
+        id: entry.id || Date.now().toString() + Math.random().toString(36).substring(2, 9),
+      }))
+      setEntries(parsedEntries)
     }
 
-    initializeApp()
+    const savedPeriods = localStorage.getItem("previousPeriods")
+    if (savedPeriods) {
+      setPreviousPeriods(JSON.parse(savedPeriods))
+    }
+
+    const savedLastResetTime = localStorage.getItem("lastReset")
+    if (savedLastResetTime) {
+      setLastResetTime(savedLastResetTime)
+    }
+
+    // Set initial online status
+    setIsOnline(navigator.onLine)
+
+    // Listen for online/offline events
+    window.addEventListener("online", () => {
+      setIsOnline(true)
+      toast({
+        title: "You're back online",
+        description: "Your data will now sync automatically",
+      })
+    })
+
+    window.addEventListener("offline", () => {
+      setIsOnline(false)
+      toast({
+        title: "You're offline",
+        description: "Don't worry, your data is saved locally",
+        variant: "destructive",
+      })
+    })
 
     // Listen for beforeinstallprompt event
     window.addEventListener("beforeinstallprompt", (e) => {
@@ -115,6 +110,27 @@ export function WorkHoursTracker() {
       window.removeEventListener("beforeinstallprompt", () => {})
     }
   }, [toast])
+
+  // Save entries to localStorage whenever they change
+  useEffect(() => {
+    if (entries.length > 0) {
+      localStorage.setItem("workEntries", JSON.stringify(entries))
+    }
+  }, [entries])
+
+  // Save previous periods to localStorage whenever they change
+  useEffect(() => {
+    if (previousPeriods.length > 0) {
+      localStorage.setItem("previousPeriods", JSON.stringify(previousPeriods))
+    }
+  }, [previousPeriods])
+
+  // Save lastResetTime to localStorage whenever it changes
+  useEffect(() => {
+    if (lastResetTime) {
+      localStorage.setItem("lastReset", lastResetTime)
+    }
+  }, [lastResetTime])
 
   // Calculate totals whenever entries or lastResetTime change
   useEffect(() => {
@@ -149,7 +165,7 @@ export function WorkHoursTracker() {
     return loc.includes("Brakel") ? 18 : 50
   }
 
-  const handleAddEntry = async () => {
+  const handleAddEntry = () => {
     if (!date) {
       setError("Please select a date")
       return
@@ -165,16 +181,17 @@ export function WorkHoursTracker() {
     const kilometers = getKilometers(location)
     const now = new Date().toISOString()
 
-    // Check if entry for this date already exists
-    const existingEntryIndex = entries.findIndex(
-      (entry) => format(new Date(entry.date), "yyyy-MM-dd") === format(date, "yyyy-MM-dd"),
-    )
-
     try {
+      // Check if entry for this date already exists
+      const existingEntryIndex = entries.findIndex(
+        (entry) => format(new Date(entry.date), "yyyy-MM-dd") === format(date, "yyyy-MM-dd"),
+      )
+
       if (existingEntryIndex >= 0) {
         // Update existing entry but preserve its original addedAt timestamp
-        const updatedEntry: WorkEntry = {
-          ...entries[existingEntryIndex],
+        const updatedEntries = [...entries]
+        const updatedEntry = {
+          ...updatedEntries[existingEntryIndex],
           date,
           startTime,
           endTime,
@@ -182,12 +199,6 @@ export function WorkHoursTracker() {
           location,
           kilometers,
         }
-
-        // Save to IndexedDB
-        await saveEntry(updatedEntry)
-
-        // Update state
-        const updatedEntries = [...entries]
         updatedEntries[existingEntryIndex] = updatedEntry
         setEntries(updatedEntries)
 
@@ -198,6 +209,7 @@ export function WorkHoursTracker() {
       } else {
         // Add new entry
         const newEntry: WorkEntry = {
+          id: Date.now().toString() + Math.random().toString(36).substring(2, 9),
           date,
           startTime,
           endTime,
@@ -207,11 +219,8 @@ export function WorkHoursTracker() {
           addedAt: now,
         }
 
-        // Save to IndexedDB
-        const savedEntry = await saveEntry(newEntry)
-
         // Update state
-        setEntries([...entries, savedEntry])
+        setEntries([...entries, newEntry])
 
         toast({
           title: "Entry added",
@@ -226,7 +235,7 @@ export function WorkHoursTracker() {
     }
   }
 
-  const handleResetTotals = async () => {
+  const handleResetTotals = () => {
     if (confirm("Are you sure you want to reset the totals? This will start a new calculation period.")) {
       try {
         const now = new Date()
@@ -269,12 +278,10 @@ export function WorkHoursTracker() {
 
         // Only add to previous periods if there are actual hours to report
         if (totalHours > 0) {
-          await savePeriodSummary(newPeriodSummary)
           setPreviousPeriods([newPeriodSummary, ...previousPeriods])
         }
 
         // Update the last reset time
-        await saveLastResetTime(resetTime)
         setLastResetTime(resetTime)
 
         toast({
@@ -288,9 +295,8 @@ export function WorkHoursTracker() {
     }
   }
 
-  const handleDeleteEntry = async (id: string) => {
+  const handleDeleteEntry = (id: string) => {
     try {
-      await deleteEntry(id)
       const updatedEntries = entries.filter((entry) => entry.id !== id)
       setEntries(updatedEntries)
 
@@ -304,10 +310,9 @@ export function WorkHoursTracker() {
     }
   }
 
-  const handleDeletePeriod = async (id: string) => {
+  const handleDeletePeriod = (id: string) => {
     if (confirm("Are you sure you want to delete this period summary?")) {
       try {
-        await deletePeriodSummary(id)
         const updatedPeriods = previousPeriods.filter((period) => period.id !== id)
         setPreviousPeriods(updatedPeriods)
 

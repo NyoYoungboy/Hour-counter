@@ -5,17 +5,7 @@ import { ThemeProvider } from "@/components/theme-provider"
 export const metadata = {
   title: "Work Hours Tracker",
   description: "Track your work hours and travel distances",
-  manifest: "/manifest.json",
-  themeColor: "#0f172a",
   viewport: "width=device-width, initial-scale=1, maximum-scale=1",
-  appleWebApp: {
-    capable: true,
-    statusBarStyle: "default",
-    title: "Work Hours Tracker",
-  },
-  formatDetection: {
-    telephone: false,
-  },
     generator: 'v0.dev'
 }
 
