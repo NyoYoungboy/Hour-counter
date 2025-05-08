@@ -8,28 +8,24 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { format } from "date-fns"
-import { AlertCircle, Clock, MapPin, RotateCcw, History } from "lucide-react"
+import { AlertCircle, Clock, MapPin, RotateCcw, History, Wifi, WifiOff, Download } from "lucide-react"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion"
-
-type WorkEntry = {
-  date: Date
-  startTime: string
-  endTime: string
-  hoursWorked: number
-  location: string
-  kilometers: number
-  addedAt: string // Timestamp when entry was added
-}
-
-type PeriodSummary = {
-  id: string
-  startDate: string
-  endDate: string
-  resetDate: string
-  totalHours: number
-  totalKilometers: number
-}
+import { useToast } from "@/hooks/use-toast"
+import {
+  initDB,
+  type WorkEntry,
+  type PeriodSummary,
+  saveEntry,
+  getAllEntries,
+  deleteEntry,
+  savePeriodSummary,
+  getAllPeriodSummaries,
+  deletePeriodSummary,
+  saveLastResetTime,
+  getLastResetTime,
+  registerNetworkListeners,
+} from "@/lib/db"
 
 export function WorkHoursTracker() {
   const [date, setDate] = useState<Date | undefined>(new Date())
@@ -42,51 +38,83 @@ export function WorkHoursTracker() {
   const [error, setError] = useState("")
   const [previousPeriods, setPreviousPeriods] = useState<PeriodSummary[]>([])
   const [lastResetTime, setLastResetTime] = useState<string | null>(null)
+  const [isOnline, setIsOnline] = useState<boolean>(true)
+  const [isInstallable, setIsInstallable] = useState<boolean>(false)
+  const [deferredPrompt, setDeferredPrompt] = useState<any>(null)
+  const { toast } = useToast()
 
-  // Load data from localStorage on component mount
+  // Initialize the database and load data
   useEffect(() => {
-    const savedEntries = localStorage.getItem("workEntries")
-    if (savedEntries) {
-      const parsedEntries = JSON.parse(savedEntries).map((entry: any) => ({
-        ...entry,
-        date: new Date(entry.date),
-        // Ensure all entries have an addedAt timestamp
-        addedAt: entry.addedAt || new Date().toISOString(),
-      }))
-      setEntries(parsedEntries)
+    const initializeApp = async () => {
+      try {
+        // Initialize IndexedDB
+        await initDB()
+
+        // Load entries
+        const savedEntries = await getAllEntries()
+        if (savedEntries.length > 0) {
+          setEntries(savedEntries)
+        }
+
+        // Load period summaries
+        const savedPeriods = await getAllPeriodSummaries()
+        if (savedPeriods.length > 0) {
+          setPreviousPeriods(savedPeriods)
+        }
+
+        // Load last reset time
+        const savedLastResetTime = await getLastResetTime()
+        if (savedLastResetTime) {
+          setLastResetTime(savedLastResetTime)
+        }
+
+        // Register network listeners
+        registerNetworkListeners()
+
+        // Set initial online status
+        setIsOnline(navigator.onLine)
+
+        // Listen for online/offline events
+        window.addEventListener("online", () => {
+          setIsOnline(true)
+          toast({
+            title: "You're back online",
+            description: "Your data will now sync automatically",
+          })
+        })
+
+        window.addEventListener("offline", () => {
+          setIsOnline(false)
+          toast({
+            title: "You're offline",
+            description: "Don't worry, your data is saved locally",
+            variant: "destructive",
+          })
+        })
+      } catch (error) {
+        console.error("Error initializing app:", error)
+        setError("Failed to initialize the application. Please refresh the page.")
+      }
     }
 
-    const savedPeriods = localStorage.getItem("previousPeriods")
-    if (savedPeriods) {
-      setPreviousPeriods(JSON.parse(savedPeriods))
-    }
+    initializeApp()
 
-    const savedLastResetTime = localStorage.getItem("lastReset")
-    if (savedLastResetTime) {
-      setLastResetTime(savedLastResetTime)
-    }
-  }, [])
+    // Listen for beforeinstallprompt event
+    window.addEventListener("beforeinstallprompt", (e) => {
+      // Prevent the mini-infobar from appearing on mobile
+      e.preventDefault()
+      // Stash the event so it can be triggered later
+      setDeferredPrompt(e)
+      // Update UI to notify the user they can install the PWA
+      setIsInstallable(true)
+    })
 
-  // Save entries to localStorage whenever they change
-  useEffect(() => {
-    if (entries.length > 0) {
-      localStorage.setItem("workEntries", JSON.stringify(entries))
+    return () => {
+      window.removeEventListener("online", () => setIsOnline(true))
+      window.removeEventListener("offline", () => setIsOnline(false))
+      window.removeEventListener("beforeinstallprompt", () => {})
     }
-  }, [entries])
-
-  // Save previous periods to localStorage whenever they change
-  useEffect(() => {
-    if (previousPeriods.length > 0) {
-      localStorage.setItem("previousPeriods", JSON.stringify(previousPeriods))
-    }
-  }, [previousPeriods])
-
-  // Save lastResetTime to localStorage whenever it changes
-  useEffect(() => {
-    if (lastResetTime) {
-      localStorage.setItem("lastReset", lastResetTime)
-    }
-  }, [lastResetTime])
+  }, [toast])
 
   // Calculate totals whenever entries or lastResetTime change
   useEffect(() => {
@@ -121,7 +149,7 @@ export function WorkHoursTracker() {
     return loc.includes("Brakel") ? 18 : 50
   }
 
-  const handleAddEntry = () => {
+  const handleAddEntry = async () => {
     if (!date) {
       setError("Please select a date")
       return
@@ -137,102 +165,216 @@ export function WorkHoursTracker() {
     const kilometers = getKilometers(location)
     const now = new Date().toISOString()
 
-    const newEntry: WorkEntry = {
-      date: new Date(date),
-      startTime,
-      endTime,
-      hoursWorked,
-      location,
-      kilometers,
-      addedAt: now,
-    }
-
     // Check if entry for this date already exists
     const existingEntryIndex = entries.findIndex(
-      (entry) => format(entry.date, "yyyy-MM-dd") === format(date, "yyyy-MM-dd"),
+      (entry) => format(new Date(entry.date), "yyyy-MM-dd") === format(date, "yyyy-MM-dd"),
     )
 
-    if (existingEntryIndex >= 0) {
-      // Update existing entry but preserve its original addedAt timestamp
-      const updatedEntries = [...entries]
-      newEntry.addedAt = updatedEntries[existingEntryIndex].addedAt
-      updatedEntries[existingEntryIndex] = newEntry
-      setEntries(updatedEntries)
-    } else {
-      // Add new entry
-      setEntries([...entries, newEntry])
-    }
+    try {
+      if (existingEntryIndex >= 0) {
+        // Update existing entry but preserve its original addedAt timestamp
+        const updatedEntry: WorkEntry = {
+          ...entries[existingEntryIndex],
+          date,
+          startTime,
+          endTime,
+          hoursWorked,
+          location,
+          kilometers,
+        }
 
-    setError("")
+        // Save to IndexedDB
+        await saveEntry(updatedEntry)
+
+        // Update state
+        const updatedEntries = [...entries]
+        updatedEntries[existingEntryIndex] = updatedEntry
+        setEntries(updatedEntries)
+
+        toast({
+          title: "Entry updated",
+          description: `Updated entry for ${format(date, "MMMM d, yyyy")}`,
+        })
+      } else {
+        // Add new entry
+        const newEntry: WorkEntry = {
+          date,
+          startTime,
+          endTime,
+          hoursWorked,
+          location,
+          kilometers,
+          addedAt: now,
+        }
+
+        // Save to IndexedDB
+        const savedEntry = await saveEntry(newEntry)
+
+        // Update state
+        setEntries([...entries, savedEntry])
+
+        toast({
+          title: "Entry added",
+          description: `Added new entry for ${format(date, "MMMM d, yyyy")}`,
+        })
+      }
+
+      setError("")
+    } catch (error) {
+      console.error("Error saving entry:", error)
+      setError("Failed to save entry. Please try again.")
+    }
   }
 
-  const handleResetTotals = () => {
+  const handleResetTotals = async () => {
     if (confirm("Are you sure you want to reset the totals? This will start a new calculation period.")) {
-      const now = new Date()
-      const resetTime = now.toISOString()
+      try {
+        const now = new Date()
+        const resetTime = now.toISOString()
 
-      // Find entries from the current period
-      const currentPeriodEntries = entries.filter((entry) => {
-        return !lastResetTime || new Date(entry.addedAt).getTime() > new Date(lastResetTime || "").getTime()
-      })
+        // Find entries from the current period
+        const currentPeriodEntries = entries.filter((entry) => {
+          return !lastResetTime || new Date(entry.addedAt).getTime() > new Date(lastResetTime || "").getTime()
+        })
 
-      // Find the last entry date in the current period
-      let endDate = "No entries"
-      if (currentPeriodEntries.length > 0) {
-        // Sort entries by date
-        const sortedEntries = [...currentPeriodEntries].sort(
-          (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime(),
-        )
-        endDate = format(sortedEntries[0].date, "MMMM d, yyyy")
+        // Find the last entry date in the current period
+        let endDate = "No entries"
+        if (currentPeriodEntries.length > 0) {
+          // Sort entries by date
+          const sortedEntries = [...currentPeriodEntries].sort(
+            (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime(),
+          )
+          endDate = format(new Date(sortedEntries[0].date), "MMMM d, yyyy")
+        }
+
+        // Find the first entry date in the current period
+        let startDate = "No entries"
+        if (currentPeriodEntries.length > 0) {
+          // Sort entries by date
+          const sortedEntries = [...currentPeriodEntries].sort(
+            (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime(),
+          )
+          startDate = format(new Date(sortedEntries[0].date), "MMMM d, yyyy")
+        }
+
+        // Save the current period summary before resetting
+        const newPeriodSummary: PeriodSummary = {
+          id: now.getTime().toString(),
+          startDate,
+          endDate,
+          resetDate: format(now, "MMMM d, yyyy 'at' h:mm a"),
+          totalHours,
+          totalKilometers,
+        }
+
+        // Only add to previous periods if there are actual hours to report
+        if (totalHours > 0) {
+          await savePeriodSummary(newPeriodSummary)
+          setPreviousPeriods([newPeriodSummary, ...previousPeriods])
+        }
+
+        // Update the last reset time
+        await saveLastResetTime(resetTime)
+        setLastResetTime(resetTime)
+
+        toast({
+          title: "Totals reset",
+          description: "Your previous period has been saved and a new period has started",
+        })
+      } catch (error) {
+        console.error("Error resetting totals:", error)
+        setError("Failed to reset totals. Please try again.")
       }
-
-      // Find the first entry date in the current period
-      let startDate = "No entries"
-      if (currentPeriodEntries.length > 0) {
-        // Sort entries by date
-        const sortedEntries = [...currentPeriodEntries].sort(
-          (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime(),
-        )
-        startDate = format(sortedEntries[0].date, "MMMM d, yyyy")
-      }
-
-      // Save the current period summary before resetting
-      const newPeriodSummary: PeriodSummary = {
-        id: now.getTime().toString(),
-        startDate,
-        endDate,
-        resetDate: format(now, "MMMM d, yyyy 'at' h:mm a"),
-        totalHours,
-        totalKilometers,
-      }
-
-      // Only add to previous periods if there are actual hours to report
-      if (totalHours > 0) {
-        setPreviousPeriods([newPeriodSummary, ...previousPeriods])
-      }
-
-      // Update the last reset time
-      setLastResetTime(resetTime)
     }
   }
 
-  const handleDeleteEntry = (index: number) => {
-    const updatedEntries = [...entries]
-    updatedEntries.splice(index, 1)
-    setEntries(updatedEntries)
-    localStorage.setItem("workEntries", JSON.stringify(updatedEntries))
+  const handleDeleteEntry = async (id: string) => {
+    try {
+      await deleteEntry(id)
+      const updatedEntries = entries.filter((entry) => entry.id !== id)
+      setEntries(updatedEntries)
+
+      toast({
+        title: "Entry deleted",
+        description: "The entry has been removed",
+      })
+    } catch (error) {
+      console.error("Error deleting entry:", error)
+      setError("Failed to delete entry. Please try again.")
+    }
   }
 
-  const handleDeletePeriod = (id: string) => {
+  const handleDeletePeriod = async (id: string) => {
     if (confirm("Are you sure you want to delete this period summary?")) {
-      const updatedPeriods = previousPeriods.filter((period) => period.id !== id)
-      setPreviousPeriods(updatedPeriods)
-      localStorage.setItem("previousPeriods", JSON.stringify(updatedPeriods))
+      try {
+        await deletePeriodSummary(id)
+        const updatedPeriods = previousPeriods.filter((period) => period.id !== id)
+        setPreviousPeriods(updatedPeriods)
+
+        toast({
+          title: "Period deleted",
+          description: "The period summary has been removed",
+        })
+      } catch (error) {
+        console.error("Error deleting period:", error)
+        setError("Failed to delete period. Please try again.")
+      }
+    }
+  }
+
+  const handleInstallClick = async () => {
+    if (!deferredPrompt) {
+      return
+    }
+
+    // Show the install prompt
+    deferredPrompt.prompt()
+
+    // Wait for the user to respond to the prompt
+    const { outcome } = await deferredPrompt.userChoice
+
+    // We no longer need the prompt. Clear it up
+    setDeferredPrompt(null)
+
+    // Hide the install button
+    setIsInstallable(false)
+
+    if (outcome === "accepted") {
+      toast({
+        title: "App installed",
+        description: "Thank you for installing our app!",
+      })
+    } else {
+      toast({
+        title: "Installation declined",
+        description: "You can install the app later from the menu",
+      })
     }
   }
 
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+      {!isOnline && (
+        <Alert variant="warning" className="col-span-1 md:col-span-2">
+          <WifiOff className="h-4 w-4" />
+          <AlertDescription>
+            You are currently offline. Your changes will be saved locally and synced when you're back online.
+          </AlertDescription>
+        </Alert>
+      )}
+
+      {isInstallable && (
+        <Alert className="col-span-1 md:col-span-2 bg-primary/10">
+          <Download className="h-4 w-4" />
+          <AlertDescription className="flex justify-between items-center">
+            <span>Install this app on your device for a better experience</span>
+            <Button size="sm" onClick={handleInstallClick}>
+              Install
+            </Button>
+          </AlertDescription>
+        </Alert>
+      )}
+
       <Card>
         <CardHeader>
           <CardTitle>Add Work Hours</CardTitle>
@@ -289,7 +431,9 @@ export function WorkHoursTracker() {
           )}
 
           <Button onClick={handleAddEntry} className="w-full">
-            {entries.some((entry) => format(entry.date, "yyyy-MM-dd") === format(date || new Date(), "yyyy-MM-dd"))
+            {entries.some(
+              (entry) => format(new Date(entry.date), "yyyy-MM-dd") === format(date || new Date(), "yyyy-MM-dd"),
+            )
               ? "Update Entry"
               : "Add Entry"}
           </Button>
@@ -299,7 +443,10 @@ export function WorkHoursTracker() {
       <div className="space-y-6">
         <Card>
           <CardHeader>
-            <CardTitle>Current Period Summary</CardTitle>
+            <CardTitle className="flex items-center justify-between">
+              <span>Current Period Summary</span>
+              {isOnline ? <Wifi className="h-4 w-4 text-green-500" /> : <WifiOff className="h-4 w-4 text-amber-500" />}
+            </CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="flex items-center justify-between">
@@ -382,17 +529,17 @@ export function WorkHoursTracker() {
               <p className="text-center text-muted-foreground">No entries yet</p>
             ) : (
               entries
-                .sort((a, b) => b.date.getTime() - a.date.getTime())
-                .map((entry, index) => {
+                .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+                .map((entry) => {
                   const isCurrentPeriod =
                     !lastResetTime || new Date(entry.addedAt).getTime() > new Date(lastResetTime).getTime()
 
                   return (
-                    <Card key={index} className={`p-4 ${!isCurrentPeriod ? "opacity-70" : ""}`}>
+                    <Card key={entry.id} className={`p-4 ${!isCurrentPeriod ? "opacity-70" : ""}`}>
                       <div className="flex justify-between items-start">
                         <div>
                           <div className="flex items-center gap-2">
-                            <p className="font-bold">{format(entry.date, "EEEE, MMMM d, yyyy")}</p>
+                            <p className="font-bold">{format(new Date(entry.date), "EEEE, MMMM d, yyyy")}</p>
                             {!isCurrentPeriod && (
                               <span className="text-xs bg-muted px-2 py-0.5 rounded-full">Previous period</span>
                             )}
@@ -406,7 +553,7 @@ export function WorkHoursTracker() {
                           variant="ghost"
                           size="sm"
                           className="text-destructive hover:text-destructive/80"
-                          onClick={() => handleDeleteEntry(index)}
+                          onClick={() => handleDeleteEntry(entry.id || "")}
                         >
                           Delete
                         </Button>
