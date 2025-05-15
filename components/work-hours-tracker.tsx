@@ -69,7 +69,7 @@ export function WorkHoursTracker() {
         setIsLoading(true)
 
         // Load work entries
-        const { data: entriesData, error: entriesError } = await supabase
+        const { data: entriesData, error: entriesError } = await supabase()
           .from("work_entries")
           .select("*")
           .eq("user_id", user.id)
@@ -92,7 +92,7 @@ export function WorkHoursTracker() {
         setEntries(transformedEntries)
 
         // Load period summaries
-        const { data: periodsData, error: periodsError } = await supabase
+        const { data: periodsData, error: periodsError } = await supabase()
           .from("period_summaries")
           .select("*")
           .eq("user_id", user.id)
@@ -103,7 +103,7 @@ export function WorkHoursTracker() {
         setPreviousPeriods(periodsData)
 
         // Load user settings (last reset time)
-        const { data: settingsData, error: settingsError } = await supabase
+        const { data: settingsData, error: settingsError } = await supabase()
           .from("user_settings")
           .select("*")
           .eq("user_id", user.id)
@@ -237,7 +237,7 @@ export function WorkHoursTracker() {
         // Update existing entry
         const existingEntry = entries[existingEntryIndex]
 
-        const { data, error } = await supabase
+        const { data, error } = await supabase()
           .from("work_entries")
           .update({
             start_time: startTime,
@@ -272,7 +272,7 @@ export function WorkHoursTracker() {
         })
       } else {
         // Add new entry
-        const { data, error } = await supabase
+        const { data, error } = await supabase()
           .from("work_entries")
           .insert({
             user_id: user.id,
@@ -350,7 +350,7 @@ export function WorkHoursTracker() {
 
         // Save the current period summary before resetting
         if (totalHours > 0) {
-          const { data, error } = await supabase
+          const { data, error } = await supabase()
             .from("period_summaries")
             .insert({
               user_id: user.id,
@@ -378,7 +378,7 @@ export function WorkHoursTracker() {
         }
 
         // Update the last reset time in user settings
-        const { error: settingsError } = await supabase.from("user_settings").upsert({
+        const { error: settingsError } = await supabase().from("user_settings").upsert({
           user_id: user.id,
           last_reset_time: resetTime,
           updated_at: resetTime,
@@ -404,7 +404,7 @@ export function WorkHoursTracker() {
     if (!user) return
 
     try {
-      const { error } = await supabase.from("work_entries").delete().eq("id", id)
+      const { error } = await supabase().from("work_entries").delete().eq("id", id)
 
       if (error) throw error
 
@@ -427,7 +427,7 @@ export function WorkHoursTracker() {
 
     if (confirm("Are you sure you want to delete this period summary?")) {
       try {
-        const { error } = await supabase.from("period_summaries").delete().eq("id", id)
+        const { error } = await supabase().from("period_summaries").delete().eq("id", id)
 
         if (error) throw error
 

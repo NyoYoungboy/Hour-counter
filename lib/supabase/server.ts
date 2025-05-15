@@ -3,5 +3,10 @@ import { cookies } from "next/headers"
 import type { Database } from "@/lib/supabase/database.types"
 
 export const createServerClient = () => {
-  return createServerComponentClient<Database>({ cookies })
+  try {
+    return createServerComponentClient<Database>({ cookies })
+  } catch (error) {
+    console.error("Error creating server client:", error)
+    throw error
+  }
 }

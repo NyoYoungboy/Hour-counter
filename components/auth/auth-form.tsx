@@ -27,7 +27,7 @@ export function AuthForm() {
     setError(null)
 
     try {
-      const { error } = await supabase.auth.signUp({
+      const { error } = await supabase().auth.signUp({
         email,
         password,
         options: {
@@ -54,7 +54,7 @@ export function AuthForm() {
     setError(null)
 
     try {
-      const { error } = await supabase.auth.signInWithPassword({
+      const { error } = await supabase().auth.signInWithPassword({
         email,
         password,
       })
@@ -109,7 +109,7 @@ export function AuthForm() {
                 />
               </div>
               {error && (
-                <Alert variant="destructive">
+                <Alert variant={error.includes("Check your email") ? "default" : "destructive"}>
                   <AlertCircle className="h-4 w-4" />
                   <AlertDescription>{error}</AlertDescription>
                 </Alert>

@@ -31,30 +31,44 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     const setData = async () => {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession()
-      setSession(session)
-      setUser(session?.user ?? null)
-      setIsLoading(false)
+      try {
+        const {
+          data: { session },
+        } = await supabase().auth.getSession()
+        setSession(session)
+        setUser(session?.user ?? null)
+        setIsLoading(false)
+      } catch (error) {
+        console.error("Error getting session:", error)
+        setIsLoading(false)
+      }
     }
-
-    const { data: authListener } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSession(session)
-      setUser(session?.user ?? null)
-      setIsLoading(false)
-    })
 
     setData()
 
-    return () => {
-      authListener.subscription.unsubscribe()
+    try {
+      const { data: authListener } = supabase().auth.onAuthStateChange((_event, session) => {
+        setSession(session)
+        setUser(session?.user ?? null)
+        setIsLoading(false)
+      })
+
+      return () => {
+        authListener.subscription.unsubscribe()
+      }
+    } catch (error) {
+      console.error("Error setting up auth listener:", error)
+      setIsLoading(false)
     }
   }, [])
 
   const signOut = async () => {
-    await supabase.auth.signOut()
-    router.push("/login")
+    try {
+      await supabase().auth.signOut()
+      router.push("/login")
+    } catch (error) {
+      console.error("Error signing out:", error)
+    }
   }
 
   const value = {
