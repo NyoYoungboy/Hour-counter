@@ -4,7 +4,7 @@ import type React from "react"
 
 import { createContext, useContext, useEffect, useState } from "react"
 import type { Session, User } from "@supabase/supabase-js"
-import { supabase } from "@/lib/supabase/client"
+import { supabaseClient } from "@/lib/supabase/client"
 import { useRouter } from "next/navigation"
 
 type AuthContextType = {
@@ -34,7 +34,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       try {
         const {
           data: { session },
-        } = await supabase().auth.getSession()
+        } = await supabaseClient.auth.getSession()
         setSession(session)
         setUser(session?.user ?? null)
         setIsLoading(false)
@@ -47,7 +47,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setData()
 
     try {
-      const { data: authListener } = supabase().auth.onAuthStateChange((_event, session) => {
+      const { data: authListener } = supabaseClient.auth.onAuthStateChange((_event, session) => {
         setSession(session)
         setUser(session?.user ?? null)
         setIsLoading(false)
@@ -64,7 +64,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const signOut = async () => {
     try {
-      await supabase().auth.signOut()
+      await supabaseClient.auth.signOut()
       router.push("/login")
     } catch (error) {
       console.error("Error signing out:", error)
