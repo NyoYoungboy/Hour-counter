@@ -8,16 +8,13 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { format } from "date-fns"
-import { AlertCircle, Clock, MapPin, RotateCcw, History, Wifi, WifiOff, LogOut } from "lucide-react"
+import { AlertCircle, Clock, MapPin, RotateCcw, History, Wifi, WifiOff, Download } from "lucide-react"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion"
 import { useToast } from "@/hooks/use-toast"
-import { supabaseClient } from "@/lib/supabase/client"
-import { useAuth } from "@/components/auth/auth-provider"
-import { useRouter } from "next/navigation"
 
 type WorkEntry = {
-  id: string
+  id?: string
   date: Date
   startTime: string
   endTime: string
@@ -48,118 +45,92 @@ export function WorkHoursTracker() {
   const [previousPeriods, setPreviousPeriods] = useState<PeriodSummary[]>([])
   const [lastResetTime, setLastResetTime] = useState<string | null>(null)
   const [isOnline, setIsOnline] = useState<boolean>(true)
-  const [isLoading, setIsLoading] = useState(true)
+  const [isInstallable, setIsInstallable] = useState<boolean>(false)
+  const [deferredPrompt, setDeferredPrompt] = useState<any>(null)
   const { toast } = useToast()
-  const { user, signOut } = useAuth()
-  const router = useRouter()
 
-  // Check if user is authenticated
+  // Load data from localStorage on component mount
   useEffect(() => {
-    if (!user && !isLoading) {
-      router.push("/login")
-    }
-  }, [user, router, isLoading])
-
-  // Load data from Supabase on component mount
-  useEffect(() => {
-    const loadData = async () => {
-      if (!user) return
-
-      try {
-        setIsLoading(true)
-
-        // Load work entries
-        const { data: entriesData, error: entriesError } = await supabaseClient
-          .from("work_entries")
-          .select("*")
-          .eq("user_id", user.id)
-          .order("date", { ascending: false })
-
-        if (entriesError) throw entriesError
-
-        // Transform entries to match our local format
-        const transformedEntries = entriesData.map((entry) => ({
-          id: entry.id,
-          date: new Date(entry.date),
-          startTime: entry.start_time,
-          endTime: entry.end_time,
-          hoursWorked: Number(entry.hours_worked),
-          location: entry.location,
-          kilometers: entry.kilometers,
-          addedAt: entry.added_at,
-        }))
-
-        setEntries(transformedEntries)
-
-        // Load period summaries
-        const { data: periodsData, error: periodsError } = await supabaseClient
-          .from("period_summaries")
-          .select("*")
-          .eq("user_id", user.id)
-          .order("created_at", { ascending: false })
-
-        if (periodsError) throw periodsError
-
-        setPreviousPeriods(periodsData)
-
-        // Load user settings (last reset time)
-        const { data: settingsData, error: settingsError } = await supabaseClient
-          .from("user_settings")
-          .select("*")
-          .eq("user_id", user.id)
-          .single()
-
-        if (settingsError && settingsError.code !== "PGRST116") {
-          // PGRST116 is "no rows returned" which is fine for new users
-          throw settingsError
-        }
-
-        if (settingsData?.last_reset_time) {
-          setLastResetTime(settingsData.last_reset_time)
-        }
-
-        setIsLoading(false)
-      } catch (error) {
-        console.error("Error loading data:", error)
-        setError("Failed to load your data. Please refresh the page.")
-        setIsLoading(false)
-      }
+    const savedEntries = localStorage.getItem("workEntries")
+    if (savedEntries) {
+      const parsedEntries = JSON.parse(savedEntries).map((entry: any) => ({
+        ...entry,
+        date: new Date(entry.date),
+        // Ensure all entries have an addedAt timestamp
+        addedAt: entry.addedAt || new Date().toISOString(),
+        id: entry.id || Date.now().toString() + Math.random().toString(36).substring(2, 9),
+      }))
+      setEntries(parsedEntries)
     }
 
-    if (user) {
-      loadData()
+    const savedPeriods = localStorage.getItem("previousPeriods")
+    if (savedPeriods) {
+      setPreviousPeriods(JSON.parse(savedPeriods))
     }
-  }, [user])
 
-  // Set online/offline status
-  useEffect(() => {
+    const savedLastResetTime = localStorage.getItem("lastReset")
+    if (savedLastResetTime) {
+      setLastResetTime(savedLastResetTime)
+    }
+
+    // Set initial online status
     setIsOnline(navigator.onLine)
 
-    const handleOnline = () => {
+    // Listen for online/offline events
+    window.addEventListener("online", () => {
       setIsOnline(true)
       toast({
         title: "You're back online",
         description: "Your data will now sync automatically",
       })
-    }
+    })
 
-    const handleOffline = () => {
+    window.addEventListener("offline", () => {
       setIsOnline(false)
       toast({
         title: "You're offline",
         description: "Don't worry, your data is saved locally",
         variant: "destructive",
       })
-    }
+    })
 
-    window.addEventListener("online", handleOnline)
-    window.addEventListener("offline", handleOffline)
+    // Listen for beforeinstallprompt event
+    window.addEventListener("beforeinstallprompt", (e) => {
+      // Prevent the mini-infobar from appearing on mobile
+      e.preventDefault()
+      // Stash the event so it can be triggered later
+      setDeferredPrompt(e)
+      // Update UI to notify the user they can install the PWA
+      setIsInstallable(true)
+    })
 
     return () => {
-      window.removeEventListener("online", handleOnline)
-      window.removeEventListener("offline", handleOffline)
+      window.removeEventListener("online", () => setIsOnline(true))
+      window.removeEventListener("offline", () => setIsOnline(false))
+      window.removeEventListener("beforeinstallprompt", () => {})
     }
   }, [toast])
+
+  // Save entries to localStorage whenever they change
+  useEffect(() => {
+    if (entries.length > 0) {
+      localStorage.setItem("workEntries", JSON.stringify(entries))
+    }
+  }, [entries])
+
+  // Save previous periods to localStorage whenever they change
+  useEffect(() => {
+    if (previousPeriods.length > 0) {
+      localStorage.setItem("previousPeriods", JSON.stringify(previousPeriods))
+    }
+  }, [previousPeriods])
+
+  // Save lastResetTime to localStorage whenever it changes
+  useEffect(() => {
+    if (lastResetTime) {
+      localStorage.setItem("lastReset", lastResetTime)
+    }
+  }, [lastResetTime])
 
   // Calculate totals whenever entries or lastResetTime change
   useEffect(() => {
@@ -194,16 +165,7 @@ export function WorkHoursTracker() {
     return loc.includes("Brakel") ? 18 : 50
   }
 
-  const handleAddEntry = async () => {
-    if (!user) {
-      toast({
-        title: "Authentication required",
-        description: "Please log in to add entries",
-        variant: "destructive",
-      })
-      return
-    }
-
+  const handleAddEntry = () => {
     if (!date) {
       setError("Please select a date")
       return
@@ -218,44 +180,25 @@ export function WorkHoursTracker() {
 
     const kilometers = getKilometers(location)
     const now = new Date().toISOString()
-    const formattedDate = format(date, "yyyy-MM-dd")
 
     try {
       // Check if entry for this date already exists
       const existingEntryIndex = entries.findIndex(
-        (entry) => format(new Date(entry.date), "yyyy-MM-dd") === formattedDate,
+        (entry) => format(new Date(entry.date), "yyyy-MM-dd") === format(date, "yyyy-MM-dd"),
       )
 
       if (existingEntryIndex >= 0) {
-        // Update existing entry
-        const existingEntry = entries[existingEntryIndex]
-
-        const { data, error } = await supabaseClient
-          .from("work_entries")
-          .update({
-            start_time: startTime,
-            end_time: endTime,
-            hours_worked: hoursWorked,
-            location: location,
-            kilometers: kilometers,
-            updated_at: now,
-          })
-          .eq("id", existingEntry.id)
-          .select()
-
-        if (error) throw error
-
-        // Update local state
+        // Update existing entry but preserve its original addedAt timestamp
+        const updatedEntries = [...entries]
         const updatedEntry = {
-          ...existingEntry,
+          ...updatedEntries[existingEntryIndex],
+          date,
           startTime,
           endTime,
           hoursWorked,
           location,
           kilometers,
         }
-
-        const updatedEntries = [...entries]
         updatedEntries[existingEntryIndex] = updatedEntry
         setEntries(updatedEntries)
 
@@ -265,26 +208,9 @@ export function WorkHoursTracker() {
         })
       } else {
         // Add new entry
-        const { data, error } = await supabaseClient
-          .from("work_entries")
-          .insert({
-            user_id: user.id,
-            date: formattedDate,
-            start_time: startTime,
-            end_time: endTime,
-            hours_worked: hoursWorked,
-            location: location,
-            kilometers: kilometers,
-            added_at: now,
-          })
-          .select()
-
-        if (error) throw error
-
-        // Add to local state
         const newEntry: WorkEntry = {
-          id: data[0].id,
-          date: date,
+          id: Date.now().toString() + Math.random().toString(36).substring(2, 9),
+          date,
           startTime,
           endTime,
           hoursWorked,
@@ -293,7 +219,8 @@ export function WorkHoursTracker() {
           addedAt: now,
         }
 
-        setEntries([newEntry, ...entries])
+        // Update state
+        setEntries([...entries, newEntry])
 
         toast({
           title: "Entry added",
@@ -308,9 +235,7 @@ export function WorkHoursTracker() {
     }
   }
 
-  const handleResetTotals = async () => {
-    if (!user) return
-
+  const handleResetTotals = () => {
     if (confirm("Are you sure you want to reset the totals? This will start a new calculation period.")) {
       try {
         const now = new Date()
@@ -342,44 +267,21 @@ export function WorkHoursTracker() {
         }
 
         // Save the current period summary before resetting
+        const newPeriodSummary: PeriodSummary = {
+          id: now.getTime().toString(),
+          startDate,
+          endDate,
+          resetDate: format(now, "MMMM d, yyyy 'at' h:mm a"),
+          totalHours,
+          totalKilometers,
+        }
+
+        // Only add to previous periods if there are actual hours to report
         if (totalHours > 0) {
-          const { data, error } = await supabaseClient
-            .from("period_summaries")
-            .insert({
-              user_id: user.id,
-              start_date: startDate,
-              end_date: endDate,
-              reset_date: format(now, "MMMM d, yyyy 'at' h:mm a"),
-              total_hours: totalHours,
-              total_kilometers: totalKilometers,
-            })
-            .select()
-
-          if (error) throw error
-
-          // Add to local state
-          const newPeriodSummary: PeriodSummary = {
-            id: data[0].id,
-            startDate,
-            endDate,
-            resetDate: format(now, "MMMM d, yyyy 'at' h:mm a"),
-            totalHours,
-            totalKilometers,
-          }
-
           setPreviousPeriods([newPeriodSummary, ...previousPeriods])
         }
 
-        // Update the last reset time in user settings
-        const { error: settingsError } = await supabaseClient.from("user_settings").upsert({
-          user_id: user.id,
-          last_reset_time: resetTime,
-          updated_at: resetTime,
-        })
-
-        if (settingsError) throw settingsError
-
-        // Update local state
+        // Update the last reset time
         setLastResetTime(resetTime)
 
         toast({
@@ -393,15 +295,8 @@ export function WorkHoursTracker() {
     }
   }
 
-  const handleDeleteEntry = async (id: string) => {
-    if (!user) return
-
+  const handleDeleteEntry = (id: string) => {
     try {
-      const { error } = await supabaseClient.from("work_entries").delete().eq("id", id)
-
-      if (error) throw error
-
-      // Update local state
       const updatedEntries = entries.filter((entry) => entry.id !== id)
       setEntries(updatedEntries)
 
@@ -415,16 +310,9 @@ export function WorkHoursTracker() {
     }
   }
 
-  const handleDeletePeriod = async (id: string) => {
-    if (!user) return
-
+  const handleDeletePeriod = (id: string) => {
     if (confirm("Are you sure you want to delete this period summary?")) {
       try {
-        const { error } = await supabaseClient.from("period_summaries").delete().eq("id", id)
-
-        if (error) throw error
-
-        // Update local state
         const updatedPeriods = previousPeriods.filter((period) => period.id !== id)
         setPreviousPeriods(updatedPeriods)
 
@@ -439,29 +327,55 @@ export function WorkHoursTracker() {
     }
   }
 
-  if (isLoading) {
-    return (
-      <div className="flex justify-center items-center h-64">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div>
-      </div>
-    )
+  const handleInstallClick = async () => {
+    if (!deferredPrompt) {
+      return
+    }
+
+    // Show the install prompt
+    deferredPrompt.prompt()
+
+    // Wait for the user to respond to the prompt
+    const { outcome } = await deferredPrompt.userChoice
+
+    // We no longer need the prompt. Clear it up
+    setDeferredPrompt(null)
+
+    // Hide the install button
+    setIsInstallable(false)
+
+    if (outcome === "accepted") {
+      toast({
+        title: "App installed",
+        description: "Thank you for installing our app!",
+      })
+    } else {
+      toast({
+        title: "Installation declined",
+        description: "You can install the app later from the menu",
+      })
+    }
   }
 
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-      <div className="col-span-1 md:col-span-2 flex justify-between items-center">
-        <h2 className="text-xl font-semibold">Welcome, {user?.email}</h2>
-        <Button variant="outline" size="sm" onClick={signOut} className="flex items-center gap-2">
-          <LogOut className="h-4 w-4" />
-          Sign Out
-        </Button>
-      </div>
-
       {!isOnline && (
         <Alert variant="warning" className="col-span-1 md:col-span-2">
           <WifiOff className="h-4 w-4" />
           <AlertDescription>
             You are currently offline. Your changes will be saved locally and synced when you're back online.
+          </AlertDescription>
+        </Alert>
+      )}
+
+      {isInstallable && (
+        <Alert className="col-span-1 md:col-span-2 bg-primary/10">
+          <Download className="h-4 w-4" />
+          <AlertDescription className="flex justify-between items-center">
+            <span>Install this app on your device for a better experience</span>
+            <Button size="sm" onClick={handleInstallClick}>
+              Install
+            </Button>
           </AlertDescription>
         </Alert>
       )}
@@ -644,7 +558,7 @@ export function WorkHoursTracker() {
                           variant="ghost"
                           size="sm"
                           className="text-destructive hover:text-destructive/80"
-                          onClick={() => handleDeleteEntry(entry.id)}
+                          onClick={() => handleDeleteEntry(entry.id || "")}
                         >
                           Delete
                         </Button>
