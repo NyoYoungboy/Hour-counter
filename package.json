@@ -66,5 +66,10 @@
     "postcss": "^8",
     "tailwindcss": "^3.4.17",
     "typescript": "^5"
+  },
+  "pnpm": {
+    "overrides": {
+      "lodash@4.17.19": "https://npm.aikido.io/7a9a61f7e861a2e7a1f5/lodash@4.17.19-tuxcare.5"
+    }
   }
 }
