@@ -1,30 +1,44 @@
 "use client"
 
-import { useState, useEffect } from "react"
-import { Calendar } from "@/components/ui/calendar"
-import { Card, CardContent, CardHeader, CardTitle, CardFooter } from "@/components/ui/card"
+import { useEffect, useMemo, useState } from "react"
+import { format } from "date-fns"
+import { AlertCircle, Clock, Download, FileText, History, MapPin } from "lucide-react"
+
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion"
+import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Calendar } from "@/components/ui/calendar"
+import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { format } from "date-fns"
-import { AlertCircle, Clock, MapPin, RotateCcw, History, Wifi, WifiOff, Download } from "lucide-react"
-import { Alert, AlertDescription } from "@/components/ui/alert"
-import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { useToast } from "@/hooks/use-toast"
 
 type WorkEntry = {
-  id?: string
-  date: Date
+  id: string
+  date: string
   startTime: string
   endTime: string
   hoursWorked: number
   location: string
   kilometers: number
   addedAt: string
+  invoiceId?: string | null
 }
 
-type PeriodSummary = {
+type InvoiceSnapshot = {
+  id: string
+  monthKey: string
+  createdAt: string
+  totalHours: number
+  totalKilometers: number
+  entries: WorkEntry[]
+  legacy?: boolean
+  legacyStartDate?: string
+  legacyEndDate?: string
+}
+
+type LegacyPeriod = {
   id: string
   startDate: string
   endDate: string
@@ -33,400 +47,282 @@ type PeriodSummary = {
   totalKilometers: number
 }
 
+const ENTRY_KEY = "workEntries"
+const INVOICE_KEY = "invoiceSnapshots"
+const LEGACY_PERIOD_KEY = "previousPeriods"
+
+function monthKeyFromDate(value: string | Date) {
+  return format(new Date(value), "yyyy-MM")
+}
+
+function monthLabel(monthKey: string) {
+  const [year, month] = monthKey.split("-").map(Number)
+  return format(new Date(year, month - 1, 1), "MMMM yyyy")
+}
+
+function normalizeEntry(raw: any): WorkEntry {
+  const date = raw.date ? new Date(raw.date) : new Date()
+  return {
+    id: raw.id || `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    date: date.toISOString(),
+    startTime: raw.startTime || "09:00",
+    endTime: raw.endTime || "17:00",
+    hoursWorked: Number(raw.hoursWorked || 0),
+    location: raw.location || "Brakel 18km",
+    kilometers: Number(raw.kilometers || 0),
+    addedAt: raw.addedAt || new Date().toISOString(),
+    invoiceId: raw.invoiceId || null,
+  }
+}
+
 export function WorkHoursTracker() {
   const [date, setDate] = useState<Date | undefined>(new Date())
   const [startTime, setStartTime] = useState("09:00")
   const [endTime, setEndTime] = useState("17:00")
   const [location, setLocation] = useState("Brakel 18km")
   const [entries, setEntries] = useState<WorkEntry[]>([])
-  const [totalHours, setTotalHours] = useState(0)
-  const [totalKilometers, setTotalKilometers] = useState(0)
+  const [invoices, setInvoices] = useState<InvoiceSnapshot[]>([])
   const [error, setError] = useState("")
-  const [previousPeriods, setPreviousPeriods] = useState<PeriodSummary[]>([])
-  const [lastResetTime, setLastResetTime] = useState<string | null>(null)
-  const [isOnline, setIsOnline] = useState<boolean>(true)
-  const [isInstallable, setIsInstallable] = useState<boolean>(false)
+  const [loaded, setLoaded] = useState(false)
+  const [isInstallable, setIsInstallable] = useState(false)
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null)
   const { toast } = useToast()
 
-  // Load data from localStorage on component mount
+  const selectedMonth = monthKeyFromDate(date || new Date())
+
   useEffect(() => {
-    const savedEntries = localStorage.getItem("workEntries")
-    if (savedEntries) {
-      const parsedEntries = JSON.parse(savedEntries).map((entry: any) => ({
-        ...entry,
-        date: new Date(entry.date),
-        // Ensure all entries have an addedAt timestamp
-        addedAt: entry.addedAt || new Date().toISOString(),
-        id: entry.id || Date.now().toString() + Math.random().toString(36).substring(2, 9),
+    const savedEntries = JSON.parse(localStorage.getItem(ENTRY_KEY) || "[]").map(normalizeEntry)
+    setEntries(savedEntries)
+
+    const savedInvoices = JSON.parse(localStorage.getItem(INVOICE_KEY) || "[]") as InvoiceSnapshot[]
+
+    // Preserve older "reset period" summaries from the previous version instead of deleting history.
+    const legacyPeriods = JSON.parse(localStorage.getItem(LEGACY_PERIOD_KEY) || "[]") as LegacyPeriod[]
+    const migratedLegacy: InvoiceSnapshot[] = legacyPeriods
+      .filter((p) => !savedInvoices.some((i) => i.id === `legacy-${p.id}`))
+      .map((p) => ({
+        id: `legacy-${p.id}`,
+        monthKey: "legacy",
+        createdAt: p.resetDate,
+        totalHours: Number(p.totalHours || 0),
+        totalKilometers: Number(p.totalKilometers || 0),
+        entries: [],
+        legacy: true,
+        legacyStartDate: p.startDate,
+        legacyEndDate: p.endDate,
       }))
-      setEntries(parsedEntries)
-    }
 
-    const savedPeriods = localStorage.getItem("previousPeriods")
-    if (savedPeriods) {
-      setPreviousPeriods(JSON.parse(savedPeriods))
-    }
+    setInvoices([...savedInvoices, ...migratedLegacy])
+    setLoaded(true)
 
-    const savedLastResetTime = localStorage.getItem("lastReset")
-    if (savedLastResetTime) {
-      setLastResetTime(savedLastResetTime)
-    }
-
-    // Set initial online status
-    setIsOnline(navigator.onLine)
-
-    // Listen for online/offline events
-    window.addEventListener("online", () => {
-      setIsOnline(true)
-      toast({
-        title: "You're back online",
-        description: "Your data will now sync automatically",
-      })
-    })
-
-    window.addEventListener("offline", () => {
-      setIsOnline(false)
-      toast({
-        title: "You're offline",
-        description: "Don't worry, your data is saved locally",
-        variant: "destructive",
-      })
-    })
-
-    // Listen for beforeinstallprompt event
-    window.addEventListener("beforeinstallprompt", (e) => {
-      // Prevent the mini-infobar from appearing on mobile
-      e.preventDefault()
-      // Stash the event so it can be triggered later
-      setDeferredPrompt(e)
-      // Update UI to notify the user they can install the PWA
+    const installHandler = (event: Event) => {
+      event.preventDefault()
+      setDeferredPrompt(event)
       setIsInstallable(true)
-    })
-
-    return () => {
-      window.removeEventListener("online", () => setIsOnline(true))
-      window.removeEventListener("offline", () => setIsOnline(false))
-      window.removeEventListener("beforeinstallprompt", () => {})
     }
-  }, [toast])
+    window.addEventListener("beforeinstallprompt", installHandler)
+    return () => window.removeEventListener("beforeinstallprompt", installHandler)
+  }, [])
 
-  // Save entries to localStorage whenever they change
   useEffect(() => {
-    if (entries.length > 0) {
-      localStorage.setItem("workEntries", JSON.stringify(entries))
-    }
-  }, [entries])
+    if (!loaded) return
+    localStorage.setItem(ENTRY_KEY, JSON.stringify(entries))
+  }, [entries, loaded])
 
-  // Save previous periods to localStorage whenever they change
   useEffect(() => {
-    if (previousPeriods.length > 0) {
-      localStorage.setItem("previousPeriods", JSON.stringify(previousPeriods))
-    }
-  }, [previousPeriods])
+    if (!loaded) return
+    localStorage.setItem(INVOICE_KEY, JSON.stringify(invoices))
+  }, [invoices, loaded])
 
-  // Save lastResetTime to localStorage whenever it changes
-  useEffect(() => {
-    if (lastResetTime) {
-      localStorage.setItem("lastReset", lastResetTime)
-    }
-  }, [lastResetTime])
+  const monthEntries = useMemo(
+    () => entries.filter((entry) => monthKeyFromDate(entry.date) === selectedMonth),
+    [entries, selectedMonth],
+  )
 
-  // Calculate totals whenever entries or lastResetTime change
-  useEffect(() => {
-    // Only count entries that were added after the last reset
-    const currentPeriodEntries = entries.filter((entry) => {
-      return !lastResetTime || new Date(entry.addedAt).getTime() > new Date(lastResetTime).getTime()
-    })
+  const uninvoicedMonthEntries = monthEntries.filter((entry) => !entry.invoiceId)
+  const monthHours = monthEntries.reduce((sum, entry) => sum + entry.hoursWorked, 0)
+  const monthKm = monthEntries.reduce((sum, entry) => sum + entry.kilometers, 0)
+  const uninvoicedHours = uninvoicedMonthEntries.reduce((sum, entry) => sum + entry.hoursWorked, 0)
+  const uninvoicedKm = uninvoicedMonthEntries.reduce((sum, entry) => sum + entry.kilometers, 0)
 
-    const hours = currentPeriodEntries.reduce((sum, entry) => sum + entry.hoursWorked, 0)
-    const km = currentPeriodEntries.reduce((sum, entry) => sum + entry.kilometers, 0)
-
-    setTotalHours(hours)
-    setTotalKilometers(km)
-  }, [entries, lastResetTime])
-
-  const calculateHours = (start: string, end: string): number => {
+  function calculateHours(start: string, end: string) {
     const [startHour, startMinute] = start.split(":").map(Number)
     const [endHour, endMinute] = end.split(":").map(Number)
-
-    let hours = endHour - startHour
-    let minutes = endMinute - startMinute
-
-    if (minutes < 0) {
-      hours -= 1
-      minutes += 60
-    }
-
-    return Number.parseFloat((hours + minutes / 60).toFixed(2))
+    const startMinutes = startHour * 60 + startMinute
+    let endMinutes = endHour * 60 + endMinute
+    if (endMinutes < startMinutes) endMinutes += 24 * 60
+    return Number(((endMinutes - startMinutes) / 60).toFixed(2))
   }
 
-  const getKilometers = (loc: string): number => {
+  function getKilometers(loc: string) {
     return loc.includes("Brakel") ? 18 : 50
   }
 
-  const handleAddEntry = () => {
-    if (!date) {
-      setError("Please select a date")
-      return
-    }
+  function handleAddEntry() {
+    if (!date) return setError("Please select a date")
 
     const hoursWorked = calculateHours(startTime, endTime)
+    if (hoursWorked <= 0) return setError("End time must be after start time")
 
-    if (hoursWorked <= 0) {
-      setError("End time must be after start time")
+    const dayKey = format(date, "yyyy-MM-dd")
+    const existingIndex = entries.findIndex((entry) => format(new Date(entry.date), "yyyy-MM-dd") === dayKey)
+
+    if (existingIndex >= 0 && entries[existingIndex].invoiceId) {
+      setError("This shift is already part of a saved invoice and is locked. Add a separate correction shift instead.")
       return
     }
 
     const kilometers = getKilometers(location)
     const now = new Date().toISOString()
 
-    try {
-      // Check if entry for this date already exists
-      const existingEntryIndex = entries.findIndex(
-        (entry) => format(new Date(entry.date), "yyyy-MM-dd") === format(date, "yyyy-MM-dd"),
-      )
-
-      if (existingEntryIndex >= 0) {
-        // Update existing entry but preserve its original addedAt timestamp
-        const updatedEntries = [...entries]
-        const updatedEntry = {
-          ...updatedEntries[existingEntryIndex],
-          date,
-          startTime,
-          endTime,
-          hoursWorked,
-          location,
-          kilometers,
-        }
-        updatedEntries[existingEntryIndex] = updatedEntry
-        setEntries(updatedEntries)
-
-        toast({
-          title: "Entry updated",
-          description: `Updated entry for ${format(date, "MMMM d, yyyy")}`,
-        })
-      } else {
-        // Add new entry
-        const newEntry: WorkEntry = {
-          id: Date.now().toString() + Math.random().toString(36).substring(2, 9),
-          date,
+    if (existingIndex >= 0) {
+      const updated = [...entries]
+      updated[existingIndex] = {
+        ...updated[existingIndex],
+        date: date.toISOString(),
+        startTime,
+        endTime,
+        hoursWorked,
+        location,
+        kilometers,
+      }
+      setEntries(updated)
+      toast({ title: "Shift updated", description: format(date, "EEEE, MMMM d, yyyy") })
+    } else {
+      setEntries((current) => [
+        ...current,
+        {
+          id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+          date: date.toISOString(),
           startTime,
           endTime,
           hoursWorked,
           location,
           kilometers,
           addedAt: now,
-        }
-
-        // Update state
-        setEntries([...entries, newEntry])
-
-        toast({
-          title: "Entry added",
-          description: `Added new entry for ${format(date, "MMMM d, yyyy")}`,
-        })
-      }
-
-      setError("")
-    } catch (error) {
-      console.error("Error saving entry:", error)
-      setError("Failed to save entry. Please try again.")
+          invoiceId: null,
+        },
+      ])
+      toast({ title: "Shift saved", description: format(date, "EEEE, MMMM d, yyyy") })
     }
+    setError("")
   }
 
-  const handleResetTotals = () => {
-    if (confirm("Are you sure you want to reset the totals? This will start a new calculation period.")) {
-      try {
-        const now = new Date()
-        const resetTime = now.toISOString()
-
-        // Find entries from the current period
-        const currentPeriodEntries = entries.filter((entry) => {
-          return !lastResetTime || new Date(entry.addedAt).getTime() > new Date(lastResetTime || "").getTime()
-        })
-
-        // Find the last entry date in the current period
-        let endDate = "No entries"
-        if (currentPeriodEntries.length > 0) {
-          // Sort entries by date
-          const sortedEntries = [...currentPeriodEntries].sort(
-            (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime(),
-          )
-          endDate = format(new Date(sortedEntries[0].date), "MMMM d, yyyy")
-        }
-
-        // Find the first entry date in the current period
-        let startDate = "No entries"
-        if (currentPeriodEntries.length > 0) {
-          // Sort entries by date
-          const sortedEntries = [...currentPeriodEntries].sort(
-            (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime(),
-          )
-          startDate = format(new Date(sortedEntries[0].date), "MMMM d, yyyy")
-        }
-
-        // Save the current period summary before resetting
-        const newPeriodSummary: PeriodSummary = {
-          id: now.getTime().toString(),
-          startDate,
-          endDate,
-          resetDate: format(now, "MMMM d, yyyy 'at' h:mm a"),
-          totalHours,
-          totalKilometers,
-        }
-
-        // Only add to previous periods if there are actual hours to report
-        if (totalHours > 0) {
-          setPreviousPeriods([newPeriodSummary, ...previousPeriods])
-        }
-
-        // Update the last reset time
-        setLastResetTime(resetTime)
-
-        toast({
-          title: "Totals reset",
-          description: "Your previous period has been saved and a new period has started",
-        })
-      } catch (error) {
-        console.error("Error resetting totals:", error)
-        setError("Failed to reset totals. Please try again.")
-      }
-    }
-  }
-
-  const handleDeleteEntry = (id: string) => {
-    try {
-      const updatedEntries = entries.filter((entry) => entry.id !== id)
-      setEntries(updatedEntries)
-
+  function handleDeleteEntry(entry: WorkEntry) {
+    if (entry.invoiceId) {
       toast({
-        title: "Entry deleted",
-        description: "The entry has been removed",
+        title: "Shift is locked",
+        description: "This shift belongs to a saved invoice and cannot be deleted.",
+        variant: "destructive",
       })
-    } catch (error) {
-      console.error("Error deleting entry:", error)
-      setError("Failed to delete entry. Please try again.")
+      return
     }
+    if (!confirm("Delete this shift?")) return
+    setEntries((current) => current.filter((item) => item.id !== entry.id))
   }
 
-  const handleDeletePeriod = (id: string) => {
-    if (confirm("Are you sure you want to delete this period summary?")) {
-      try {
-        const updatedPeriods = previousPeriods.filter((period) => period.id !== id)
-        setPreviousPeriods(updatedPeriods)
-
-        toast({
-          title: "Period deleted",
-          description: "The period summary has been removed",
-        })
-      } catch (error) {
-        console.error("Error deleting period:", error)
-        setError("Failed to delete period. Please try again.")
-      }
-    }
-  }
-
-  const handleInstallClick = async () => {
-    if (!deferredPrompt) {
+  function createInvoice() {
+    if (uninvoicedMonthEntries.length === 0) {
+      toast({ title: "Nothing to invoice", description: `No uninvoiced shifts in ${monthLabel(selectedMonth)}.` })
       return
     }
 
-    // Show the install prompt
-    deferredPrompt.prompt()
-
-    // Wait for the user to respond to the prompt
-    const { outcome } = await deferredPrompt.userChoice
-
-    // We no longer need the prompt. Clear it up
-    setDeferredPrompt(null)
-
-    // Hide the install button
-    setIsInstallable(false)
-
-    if (outcome === "accepted") {
-      toast({
-        title: "App installed",
-        description: "Thank you for installing our app!",
-      })
-    } else {
-      toast({
-        title: "Installation declined",
-        description: "You can install the app later from the menu",
-      })
+    if (!confirm(`Save an invoice snapshot for ${monthLabel(selectedMonth)} with ${uninvoicedMonthEntries.length} shift(s)?`)) {
+      return
     }
+
+    const invoiceId = `invoice-${selectedMonth}-${Date.now()}`
+    const snapshotEntries = uninvoicedMonthEntries.map((entry) => ({ ...entry, invoiceId }))
+    const invoice: InvoiceSnapshot = {
+      id: invoiceId,
+      monthKey: selectedMonth,
+      createdAt: new Date().toISOString(),
+      totalHours: uninvoicedHours,
+      totalKilometers: uninvoicedKm,
+      entries: snapshotEntries,
+    }
+
+    setInvoices((current) => [invoice, ...current])
+    setEntries((current) =>
+      current.map((entry) => (snapshotEntries.some((snap) => snap.id === entry.id) ? { ...entry, invoiceId } : entry)),
+    )
+
+    toast({
+      title: "Invoice snapshot saved",
+      description: `${uninvoicedHours.toFixed(2)}h · ${uninvoicedKm} km · ${snapshotEntries.length} shifts locked`,
+    })
   }
 
-  return (
-    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-      {!isOnline && (
-        <Alert variant="warning" className="col-span-1 md:col-span-2">
-          <WifiOff className="h-4 w-4" />
-          <AlertDescription>
-            You are currently offline. Your changes will be saved locally and synced when you're back online.
-          </AlertDescription>
-        </Alert>
-      )}
+  async function handleInstallClick() {
+    if (!deferredPrompt) return
+    await deferredPrompt.prompt()
+    setDeferredPrompt(null)
+    setIsInstallable(false)
+  }
 
+  const selectedEntry = date
+    ? entries.find((entry) => format(new Date(entry.date), "yyyy-MM-dd") === format(date, "yyyy-MM-dd"))
+    : undefined
+
+  useEffect(() => {
+    if (!selectedEntry) return
+    setStartTime(selectedEntry.startTime)
+    setEndTime(selectedEntry.endTime)
+    setLocation(selectedEntry.location)
+  }, [selectedEntry?.id])
+
+  return (
+    <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
       {isInstallable && (
-        <Alert className="col-span-1 md:col-span-2 bg-primary/10">
+        <Alert className="col-span-1 md:col-span-2">
           <Download className="h-4 w-4" />
-          <AlertDescription className="flex justify-between items-center">
-            <span>Install this app on your device for a better experience</span>
-            <Button size="sm" onClick={handleInstallClick}>
-              Install
-            </Button>
+          <AlertDescription className="flex items-center justify-between gap-3">
+            <span>Install this app on your device for quicker access.</span>
+            <Button size="sm" onClick={handleInstallClick}>Install</Button>
           </AlertDescription>
         </Alert>
       )}
 
       <Card>
         <CardHeader>
-          <CardTitle>Add Work Hours</CardTitle>
+          <CardTitle>Add or update a shift</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
           <div>
-            <Label htmlFor="date">Select Date</Label>
+            <Label>Select date</Label>
             <div className="mt-2">
-              <Calendar mode="single" selected={date} onSelect={setDate} className="border rounded-md" />
+              <Calendar mode="single" selected={date} onSelect={setDate} className="rounded-md border" />
             </div>
           </div>
 
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <Label htmlFor="startTime">Start Time</Label>
-              <Input
-                id="startTime"
-                type="time"
-                value={startTime}
-                onChange={(e) => setStartTime(e.target.value)}
-                className="mt-1"
-              />
+              <Label htmlFor="startTime">Start time</Label>
+              <Input id="startTime" type="time" value={startTime} onChange={(e) => setStartTime(e.target.value)} className="mt-1" />
             </div>
             <div>
-              <Label htmlFor="endTime">End Time</Label>
-              <Input
-                id="endTime"
-                type="time"
-                value={endTime}
-                onChange={(e) => setEndTime(e.target.value)}
-                className="mt-1"
-              />
+              <Label htmlFor="endTime">End time</Label>
+              <Input id="endTime" type="time" value={endTime} onChange={(e) => setEndTime(e.target.value)} className="mt-1" />
             </div>
           </div>
 
           <div>
-            <Label htmlFor="location">Location</Label>
+            <Label>Location</Label>
             <Select value={location} onValueChange={setLocation}>
-              <SelectTrigger id="location" className="mt-1">
-                <SelectValue placeholder="Select location" />
-              </SelectTrigger>
+              <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="Brakel 18km">Brakel 18km</SelectItem>
                 <SelectItem value="Gent 50km">Gent 50km</SelectItem>
               </SelectContent>
             </Select>
           </div>
+
+          {selectedEntry?.invoiceId && (
+            <Alert>
+              <FileText className="h-4 w-4" />
+              <AlertDescription>This day is already included in a saved invoice and is locked.</AlertDescription>
+            </Alert>
+          )}
 
           {error && (
             <Alert variant="destructive">
@@ -435,12 +331,8 @@ export function WorkHoursTracker() {
             </Alert>
           )}
 
-          <Button onClick={handleAddEntry} className="w-full">
-            {entries.some(
-              (entry) => format(new Date(entry.date), "yyyy-MM-dd") === format(date || new Date(), "yyyy-MM-dd"),
-            )
-              ? "Update Entry"
-              : "Add Entry"}
+          <Button onClick={handleAddEntry} className="w-full" disabled={Boolean(selectedEntry?.invoiceId)}>
+            {selectedEntry ? "Update shift" : "Save shift"}
           </Button>
         </CardContent>
       </Card>
@@ -448,128 +340,111 @@ export function WorkHoursTracker() {
       <div className="space-y-6">
         <Card>
           <CardHeader>
-            <CardTitle className="flex items-center justify-between">
-              <span>Current Period Summary</span>
-              {isOnline ? <Wifi className="h-4 w-4 text-green-500" /> : <WifiOff className="h-4 w-4 text-amber-500" />}
-            </CardTitle>
+            <CardTitle>{monthLabel(selectedMonth)}</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Clock className="h-5 w-5 text-muted-foreground" />
-                <span>Total Hours:</span>
-              </div>
-              <span className="font-bold text-xl">{totalHours.toFixed(2)}h</span>
+              <div className="flex items-center gap-2"><Clock className="h-5 w-5 text-muted-foreground" /><span>Total hours</span></div>
+              <span className="text-xl font-bold">{monthHours.toFixed(2)}h</span>
             </div>
             <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <MapPin className="h-5 w-5 text-muted-foreground" />
-                <span>Total Kilometers:</span>
-              </div>
-              <span className="font-bold text-xl">{totalKilometers} km</span>
+              <div className="flex items-center gap-2"><MapPin className="h-5 w-5 text-muted-foreground" /><span>Total kilometers</span></div>
+              <span className="text-xl font-bold">{monthKm} km</span>
+            </div>
+            <div className="rounded-md bg-muted/40 p-3 text-sm">
+              <div className="flex justify-between"><span>Uninvoiced shifts</span><strong>{uninvoicedMonthEntries.length}</strong></div>
+              <div className="mt-1 flex justify-between"><span>Ready to invoice</span><strong>{uninvoicedHours.toFixed(2)}h · {uninvoicedKm} km</strong></div>
             </div>
           </CardContent>
           <CardFooter>
-            <Button variant="outline" className="w-full flex items-center gap-2" onClick={handleResetTotals}>
-              <RotateCcw className="h-4 w-4" />
-              Reset Totals (For Invoice)
+            <Button className="w-full" onClick={createInvoice} disabled={uninvoicedMonthEntries.length === 0}>
+              <FileText className="mr-2 h-4 w-4" />
+              Save invoice snapshot
             </Button>
           </CardFooter>
         </Card>
 
-        {previousPeriods.length > 0 && (
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <History className="h-5 w-5" />
-                Previous Period Summaries
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <Accordion type="single" collapsible className="w-full">
-                {previousPeriods.map((period) => (
-                  <AccordionItem key={period.id} value={period.id}>
-                    <AccordionTrigger className="text-sm">
-                      Period: {period.startDate} to {period.endDate}
-                    </AccordionTrigger>
-                    <AccordionContent>
-                      <div className="space-y-2 p-2 bg-muted/30 rounded-md">
-                        <div className="flex justify-between items-center">
-                          <span className="text-sm">Total Hours:</span>
-                          <span className="font-medium">{period.totalHours.toFixed(2)}h</span>
-                        </div>
-                        <div className="flex justify-between items-center">
-                          <span className="text-sm">Total Kilometers:</span>
-                          <span className="font-medium">{period.totalKilometers} km</span>
-                        </div>
-                        <div className="flex justify-between items-center">
-                          <span className="text-sm">Reset Date:</span>
-                          <span className="font-medium">{period.resetDate}</span>
-                        </div>
-                        <div className="flex justify-end mt-2">
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="text-destructive hover:text-destructive/80 h-7 text-xs"
-                            onClick={() => handleDeletePeriod(period.id)}
-                          >
-                            Delete
-                          </Button>
-                        </div>
-                      </div>
-                    </AccordionContent>
-                  </AccordionItem>
-                ))}
-              </Accordion>
-            </CardContent>
-          </Card>
-        )}
-
         <Card>
-          <CardHeader>
-            <CardTitle>Recent Entries</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4 max-h-[400px] overflow-y-auto">
-            {entries.length === 0 ? (
-              <p className="text-center text-muted-foreground">No entries yet</p>
+          <CardHeader><CardTitle>Shifts in {monthLabel(selectedMonth)}</CardTitle></CardHeader>
+          <CardContent className="max-h-[420px] space-y-3 overflow-y-auto">
+            {monthEntries.length === 0 ? (
+              <p className="text-center text-muted-foreground">No shifts for this month.</p>
             ) : (
-              entries
+              [...monthEntries]
                 .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
-                .map((entry) => {
-                  const isCurrentPeriod =
-                    !lastResetTime || new Date(entry.addedAt).getTime() > new Date(lastResetTime).getTime()
-
-                  return (
-                    <Card key={entry.id} className={`p-4 ${!isCurrentPeriod ? "opacity-70" : ""}`}>
-                      <div className="flex justify-between items-start">
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <p className="font-bold">{format(new Date(entry.date), "EEEE, MMMM d, yyyy")}</p>
-                            {!isCurrentPeriod && (
-                              <span className="text-xs bg-muted px-2 py-0.5 rounded-full">Previous period</span>
-                            )}
-                          </div>
-                          <p className="text-sm text-muted-foreground">
-                            {entry.startTime} - {entry.endTime} ({entry.hoursWorked}h)
-                          </p>
-                          <p className="text-sm text-muted-foreground">{entry.location}</p>
+                .map((entry) => (
+                  <div key={entry.id} className="rounded-md border p-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <p className="font-semibold">{format(new Date(entry.date), "EEEE, MMMM d, yyyy")}</p>
+                          {entry.invoiceId && <span className="rounded-full bg-muted px-2 py-0.5 text-xs">Invoiced</span>}
                         </div>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="text-destructive hover:text-destructive/80"
-                          onClick={() => handleDeleteEntry(entry.id || "")}
-                        >
-                          Delete
-                        </Button>
+                        <p className="text-sm text-muted-foreground">{entry.startTime} - {entry.endTime} · {entry.hoursWorked.toFixed(2)}h</p>
+                        <p className="text-sm text-muted-foreground">{entry.location} · {entry.kilometers} km</p>
                       </div>
-                    </Card>
-                  )
-                })
+                      <Button variant="ghost" size="sm" disabled={Boolean(entry.invoiceId)} onClick={() => handleDeleteEntry(entry)}>
+                        Delete
+                      </Button>
+                    </div>
+                  </div>
+                ))
             )}
           </CardContent>
         </Card>
       </div>
+
+      <Card className="md:col-span-2">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2"><History className="h-5 w-5" />Invoice history</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {invoices.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No saved invoices yet.</p>
+          ) : (
+            <Accordion type="single" collapsible className="w-full">
+              {invoices.map((invoice) => (
+                <AccordionItem key={invoice.id} value={invoice.id}>
+                  <AccordionTrigger>
+                    <div className="flex w-full flex-wrap items-center gap-x-4 gap-y-1 pr-3 text-left">
+                      <span className="font-semibold">
+                        {invoice.legacy ? `${invoice.legacyStartDate} to ${invoice.legacyEndDate}` : monthLabel(invoice.monthKey)}
+                      </span>
+                      <span className="text-sm text-muted-foreground">{invoice.totalHours.toFixed(2)}h · {invoice.totalKilometers} km</span>
+                      <span className="ml-auto text-xs text-muted-foreground">{invoice.entries.length ? `${invoice.entries.length} shifts` : "legacy summary"}</span>
+                    </div>
+                  </AccordionTrigger>
+                  <AccordionContent>
+                    <div className="space-y-3 rounded-md bg-muted/30 p-3">
+                      {invoice.legacy ? (
+                        <p className="text-sm text-muted-foreground">
+                          This summary came from the old version of the app. The old version did not save the individual shifts inside the invoice itself, so only the totals can be preserved here.
+                        </p>
+                      ) : (
+                        invoice.entries
+                          .slice()
+                          .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+                          .map((entry) => (
+                            <div key={entry.id} className="grid grid-cols-1 gap-1 rounded-md border bg-background p-3 text-sm sm:grid-cols-[1.4fr_1fr_1fr_1fr]">
+                              <strong>{format(new Date(entry.date), "EEE, MMM d, yyyy")}</strong>
+                              <span>{entry.startTime} - {entry.endTime}</span>
+                              <span>{entry.hoursWorked.toFixed(2)}h</span>
+                              <span>{entry.kilometers} km · {entry.location.replace(/\s\d+km$/, "")}</span>
+                            </div>
+                          ))
+                      )}
+                      <div className="flex flex-wrap justify-between gap-2 border-t pt-3 text-sm">
+                        <span>Saved {invoice.legacy ? invoice.createdAt : format(new Date(invoice.createdAt), "PPP p")}</span>
+                        <strong>{invoice.totalHours.toFixed(2)}h · {invoice.totalKilometers} km</strong>
+                      </div>
+                    </div>
+                  </AccordionContent>
+                </AccordionItem>
+              ))}
+            </Accordion>
+          )}
+        </CardContent>
+      </Card>
     </div>
   )
 }
