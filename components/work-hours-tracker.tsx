@@ -168,7 +168,7 @@ export function WorkHoursTracker() {
     const existingIndex = entries.findIndex((entry) => format(new Date(entry.date), "yyyy-MM-dd") === dayKey)
 
     if (existingIndex >= 0 && entries[existingIndex].invoiceId) {
-      setError("This shift is already part of a saved invoice and is locked. Add a separate correction shift instead.")
+      setError("This shift is already part of a saved invoice and is locked. Delete the invoice snapshot first if you need to change it.")
       return
     }
 
@@ -212,7 +212,7 @@ export function WorkHoursTracker() {
     if (entry.invoiceId) {
       toast({
         title: "Shift is locked",
-        description: "This shift belongs to a saved invoice and cannot be deleted.",
+        description: "Delete its invoice snapshot first to unlock this shift.",
         variant: "destructive",
       })
       return
@@ -250,6 +250,23 @@ export function WorkHoursTracker() {
     toast({
       title: "Invoice snapshot saved",
       description: `${uninvoicedHours.toFixed(2)}h · ${uninvoicedKm} km · ${snapshotEntries.length} shifts locked`,
+    })
+  }
+
+  function handleDeleteInvoice(invoice: InvoiceSnapshot) {
+    if (invoice.legacy) return
+    if (!confirm(`Delete the saved invoice for ${monthLabel(invoice.monthKey)}? The shifts will be unlocked and can be edited or deleted again.`)) {
+      return
+    }
+
+    setInvoices((current) => current.filter((item) => item.id !== invoice.id))
+    setEntries((current) =>
+      current.map((entry) => (entry.invoiceId === invoice.id ? { ...entry, invoiceId: null } : entry)),
+    )
+
+    toast({
+      title: "Invoice snapshot deleted",
+      description: `${invoice.entries.length} shift(s) unlocked.`,
     })
   }
 
@@ -320,7 +337,7 @@ export function WorkHoursTracker() {
           {selectedEntry?.invoiceId && (
             <Alert>
               <FileText className="h-4 w-4" />
-              <AlertDescription>This day is already included in a saved invoice and is locked.</AlertDescription>
+              <AlertDescription>This day is already included in a saved invoice and is locked. Delete the invoice snapshot first if you need to change it.</AlertDescription>
             </Alert>
           )}
 
@@ -433,9 +450,16 @@ export function WorkHoursTracker() {
                             </div>
                           ))
                       )}
-                      <div className="flex flex-wrap justify-between gap-2 border-t pt-3 text-sm">
+                      <div className="flex flex-wrap items-center justify-between gap-2 border-t pt-3 text-sm">
                         <span>Saved {invoice.legacy ? invoice.createdAt : format(new Date(invoice.createdAt), "PPP p")}</span>
-                        <strong>{invoice.totalHours.toFixed(2)}h · {invoice.totalKilometers} km</strong>
+                        <div className="flex items-center gap-3">
+                          <strong>{invoice.totalHours.toFixed(2)}h · {invoice.totalKilometers} km</strong>
+                          {!invoice.legacy && (
+                            <Button variant="destructive" size="sm" onClick={() => handleDeleteInvoice(invoice)}>
+                              Delete invoice
+                            </Button>
+                          )}
+                        </div>
                       </div>
                     </div>
                   </AccordionContent>
