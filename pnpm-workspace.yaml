@@ -1,3 +1,4 @@
 blockExoticSubdeps: false
 overrides:
   lodash@4: 'https://npm.aikido.io/7a9a61f7e861a2e7a1f5/lodash@4.17.21-aikido.2'
+  sharp@0.34: 'https://npm.aikido.io/7a9a61f7e861a2e7a1f5/sharp@0.34.5-aikido.1'
